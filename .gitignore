@@ -1,0 +1,18 @@
+# ESP-IDF generated build output
+/build/
+/cmake-build-*/
+
+# Generated configuration; retain sdkconfig.defaults in version control
+/sdkconfig
+/sdkconfig.old
+
+# Downloaded by the ESP-IDF component manager from dependencies.lock
+/managed_components/
+
+# Editor-generated project state
+/.vscode/
+/.clangd
+
+# Local Python tooling artifacts
+__pycache__/
+*.py[cod]

@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "newhaven_display.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_driver_gpio
+        esp_hw_support
+        esp_lcd
+        esp_lcd_st7701
+        esp_mm
+)
