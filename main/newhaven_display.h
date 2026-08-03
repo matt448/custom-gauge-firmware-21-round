@@ -15,11 +15,17 @@ typedef struct {
     esp_lcd_panel_handle_t dpi_panel;
     esp_ldo_channel_handle_t dsi_phy_ldo;
     void *framebuffer;
+    void *backbuffer;
 } newhaven_display_t;
 
 esp_err_t newhaven_display_reset(void);
 esp_err_t newhaven_st7701s_init(esp_lcd_panel_handle_t panel);
 esp_err_t newhaven_display_init(newhaven_display_t *display);
+esp_err_t newhaven_display_begin_frame(newhaven_display_t *display, void **framebuffer);
+esp_err_t newhaven_display_prepare_rgb565(newhaven_display_t *display,
+                                         const uint8_t *image,
+                                         size_t image_size);
+esp_err_t newhaven_display_flush_framebuffer(newhaven_display_t *display);
 esp_err_t newhaven_display_draw_rgb565(newhaven_display_t *display,
                                        const uint8_t *image,
                                        size_t image_size);

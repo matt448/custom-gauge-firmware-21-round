@@ -148,18 +148,38 @@ I (....) newhaven_display: Initializing ST7701S controller
 I (....) newhaven_display: Sending Newhaven NHD-2.1-480480AF-ASXP ST7701S initialization sequence
 ```
 
-The driver then starts MIPI DSI video output and renders the embedded static
-background at [`assets/rpm_gauge.rgb565`](assets/rpm_gauge.rgb565). The asset
-must be a 480 x 480, big-endian RGB565 image (460,800 bytes). Generate it from
-a PNG with:
+The driver then starts MIPI DSI video output and animates a white needle over
+the embedded static background at [`assets/rpm_gauge.rgb565`](assets/rpm_gauge.rgb565).
+The asset must be a 480 x 480, big-endian RGB565 image (460,800 bytes).
+Generate it from a PNG with:
 
 ```powershell
 python tools\png_to_rgb565.py path\to\rpm_gauge.png
 ```
 
 Copy the generated `rpm_gauge.rgb565` to `assets\rpm_gauge.rgb565`, then
-rebuild and flash. The application expands it into the existing RGB888
-framebuffer once at startup so the established DSI output format is unchanged.
+rebuild and flash. The application expands the asset into both RGB888
+framebuffers at startup. Each 30 FPS frame restores only the prior needle's
+pixels from the RGB565 asset, draws the new three-pixel-wide white needle and
+center hub in the inactive framebuffer, then presents that completed
+framebuffer to DSI scanout.
+
+## Gauge animation
+
+The independent `gauge_renderer` module currently generates a synthetic test
+value that sweeps from 0.0 to 5.0 over approximately three seconds and returns
+to 0.0 over the next three seconds. Its displayed value uses an exponential
+smoothing coefficient of 0.18.
+
+The needle center is `(240, 240)`, its initial length is 155 pixels, and its
+initial white line width is three pixels. Values map linearly from 0.0 at 145
+degrees to 5.0 at 395 degrees. With the current rotation-0 framebuffer
+coordinates (positive Y downward), increasing angles move clockwise. These two
+angle constants can be calibrated later without changing the panel setup.
+
+The default framebuffer count is two. The DSI driver scans one PSRAM buffer
+while the renderer updates the other, eliminating visible tearing and avoiding
+the memory-bandwidth spikes that can cause a DSI-bridge blue underrun frame.
 
 ## Troubleshooting
 

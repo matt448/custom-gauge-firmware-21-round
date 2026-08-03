@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "gauge_renderer.c"
         "newhaven_display.c"
     INCLUDE_DIRS
         "."

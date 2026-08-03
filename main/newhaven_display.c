@@ -1,7 +1,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "esp_cache.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
@@ -321,17 +320,41 @@ esp_err_t newhaven_display_init(newhaven_display_t *display)
     };
     RETURN_ON_ERROR(esp_lcd_new_panel_st7701(display->dbi_io, &panel_config, &display->dpi_panel),
                     "create MIPI DSI ST7701S panel");
+#if NEWHAVEN_DISPLAY_FB_COUNT == 2
+    RETURN_ON_ERROR(esp_lcd_dpi_panel_get_frame_buffer(display->dpi_panel, 2,
+                                                        &display->framebuffer,
+                                                        &display->backbuffer),
+                    "get framebuffers");
+#else
     RETURN_ON_ERROR(esp_lcd_dpi_panel_get_frame_buffer(display->dpi_panel, 1, &display->framebuffer),
                     "get framebuffer");
+#endif
 
     ESP_LOGI(TAG, "Initializing ST7701S controller");
     RETURN_ON_ERROR(newhaven_st7701s_init(display->dpi_panel), "initialize ST7701S");
     return ESP_OK;
 }
 
-esp_err_t newhaven_display_draw_rgb565(newhaven_display_t *display,
-                                       const uint8_t *image,
-                                       size_t image_size)
+esp_err_t newhaven_display_begin_frame(newhaven_display_t *display, void **framebuffer)
+{
+    if (display == NULL || display->framebuffer == NULL || framebuffer == NULL) {
+        ESP_LOGE(TAG, "framebuffer is unavailable");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (display->backbuffer != NULL) {
+        void *previous_framebuffer = display->framebuffer;
+        display->framebuffer = display->backbuffer;
+        display->backbuffer = previous_framebuffer;
+    }
+
+    *framebuffer = display->framebuffer;
+    return ESP_OK;
+}
+
+esp_err_t newhaven_display_prepare_rgb565(newhaven_display_t *display,
+                                          const uint8_t *image,
+                                          size_t image_size)
 {
     const size_t expected_size = NEWHAVEN_DISPLAY_H_RES * NEWHAVEN_DISPLAY_V_RES * 2;
 
@@ -359,8 +382,33 @@ esp_err_t newhaven_display_draw_rgb565(newhaven_display_t *display,
         }
     }
 
-    RETURN_ON_ERROR(esp_cache_msync(display->framebuffer, NEWHAVEN_DISPLAY_FRAMEBUFFER_SIZE,
-                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED),
-                    "write framebuffer cache");
     return ESP_OK;
+}
+
+esp_err_t newhaven_display_flush_framebuffer(newhaven_display_t *display)
+{
+    if (display == NULL || display->framebuffer == NULL) {
+        ESP_LOGE(TAG, "framebuffer is unavailable");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    RETURN_ON_ERROR(esp_lcd_panel_draw_bitmap(display->dpi_panel,
+                                               0,
+                                               0,
+                                               NEWHAVEN_DISPLAY_H_RES,
+                                               NEWHAVEN_DISPLAY_V_RES,
+                                               display->framebuffer),
+                    "present framebuffer");
+    return ESP_OK;
+}
+
+esp_err_t newhaven_display_draw_rgb565(newhaven_display_t *display,
+                                       const uint8_t *image,
+                                       size_t image_size)
+{
+    void *framebuffer;
+    RETURN_ON_ERROR(newhaven_display_begin_frame(display, &framebuffer), "begin framebuffer");
+    RETURN_ON_ERROR(newhaven_display_prepare_rgb565(display, image, image_size),
+                    "prepare RGB565 framebuffer");
+    return newhaven_display_flush_framebuffer(display);
 }

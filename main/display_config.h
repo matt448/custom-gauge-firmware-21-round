@@ -29,7 +29,12 @@
 #define NEWHAVEN_DISPLAY_RESET_GPIO            GPIO_NUM_2
 #define NEWHAVEN_DISPLAY_RESET_GPIO_CONFIGURED 1
 
-#define NEWHAVEN_DISPLAY_FB_COUNT              1
+/*
+ * Keep one framebuffer under DSI scanout while the application renders into
+ * the other. This prevents visible tearing and DSI bridge underruns caused by
+ * modifying the actively scanned PSRAM framebuffer.
+ */
+#define NEWHAVEN_DISPLAY_FB_COUNT              2
 
 #define NEWHAVEN_DISPLAY_PIXEL_FORMAT_RGB888   888
 #define NEWHAVEN_DISPLAY_PIXEL_FORMAT_RGB565   565
