@@ -14,5 +14,6 @@
 /.clangd
 
 # Local Python tooling artifacts
+/.venv/
 __pycache__/
 *.py[cod]

@@ -131,32 +131,6 @@ static void newhaven_display_put_pixel(void *framebuffer, int x, int y, uint32_t
 #endif
 }
 
-static void newhaven_display_fill(void *framebuffer, uint32_t rgb)
-{
-    for (int y = 0; y < NEWHAVEN_DISPLAY_V_RES; y++) {
-        for (int x = 0; x < NEWHAVEN_DISPLAY_H_RES; x++) {
-            newhaven_display_put_pixel(framebuffer, x, y, rgb);
-        }
-    }
-}
-
-static void newhaven_display_draw_horizontal_bars(void *framebuffer)
-{
-    static const uint32_t colors[] = {
-        0x000000, 0xffffff, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff,
-    };
-    const int bar_height = NEWHAVEN_DISPLAY_V_RES / (int)(sizeof(colors) / sizeof(colors[0]));
-
-    for (int y = 0; y < NEWHAVEN_DISPLAY_V_RES; y++) {
-        const int bar = y / bar_height;
-        const uint32_t color = colors[bar < (int)(sizeof(colors) / sizeof(colors[0])) ? bar :
-                                      (int)(sizeof(colors) / sizeof(colors[0])) - 1];
-        for (int x = 0; x < NEWHAVEN_DISPLAY_H_RES; x++) {
-            newhaven_display_put_pixel(framebuffer, x, y, color);
-        }
-    }
-}
-
 esp_err_t newhaven_display_reset(void)
 {
 #if !NEWHAVEN_DISPLAY_RESET_GPIO_CONFIGURED
@@ -355,56 +329,34 @@ esp_err_t newhaven_display_init(newhaven_display_t *display)
     return ESP_OK;
 }
 
-esp_err_t newhaven_display_draw_test_pattern(newhaven_display_t *display,
-                                             newhaven_test_pattern_t pattern)
+esp_err_t newhaven_display_draw_rgb565(newhaven_display_t *display,
+                                       const uint8_t *image,
+                                       size_t image_size)
 {
-    if (display == NULL || display->framebuffer == NULL) {
+    const size_t expected_size = NEWHAVEN_DISPLAY_H_RES * NEWHAVEN_DISPLAY_V_RES * 2;
+
+    if (display == NULL || display->framebuffer == NULL || image == NULL) {
         ESP_LOGE(TAG, "framebuffer is unavailable");
         return ESP_ERR_INVALID_STATE;
     }
+    if (image_size != expected_size) {
+        ESP_LOGE(TAG, "RGB565 asset has %u bytes; expected %u bytes",
+                 (unsigned int)image_size, (unsigned int)expected_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
-    switch (pattern) {
-    case NEWHAVEN_TEST_PATTERN_BLACK:
-        newhaven_display_fill(display->framebuffer, 0x000000);
-        break;
-    case NEWHAVEN_TEST_PATTERN_WHITE:
-        newhaven_display_fill(display->framebuffer, 0xffffff);
-        break;
-    case NEWHAVEN_TEST_PATTERN_RED:
-        newhaven_display_fill(display->framebuffer, 0xff0000);
-        break;
-    case NEWHAVEN_TEST_PATTERN_GREEN:
-        newhaven_display_fill(display->framebuffer, 0x00ff00);
-        break;
-    case NEWHAVEN_TEST_PATTERN_BLUE:
-        newhaven_display_fill(display->framebuffer, 0x0000ff);
-        break;
-    case NEWHAVEN_TEST_PATTERN_HORIZONTAL_BARS:
-        newhaven_display_draw_horizontal_bars(display->framebuffer);
-        break;
-    case NEWHAVEN_TEST_PATTERN_BORDER:
-        newhaven_display_fill(display->framebuffer, 0x000000);
+    for (int y = 0; y < NEWHAVEN_DISPLAY_V_RES; y++) {
         for (int x = 0; x < NEWHAVEN_DISPLAY_H_RES; x++) {
-            newhaven_display_put_pixel(display->framebuffer, x, 0, 0xffffff);
-            newhaven_display_put_pixel(display->framebuffer, x, NEWHAVEN_DISPLAY_V_RES - 1, 0xffffff);
+            const size_t offset = ((size_t)y * NEWHAVEN_DISPLAY_H_RES + x) * 2;
+            const uint16_t pixel = ((uint16_t)image[offset] << 8) | image[offset + 1];
+            const uint8_t red = (pixel >> 11) & 0x1f;
+            const uint8_t green = (pixel >> 5) & 0x3f;
+            const uint8_t blue = pixel & 0x1f;
+            const uint32_t rgb = ((uint32_t)((red << 3) | (red >> 2)) << 16) |
+                                 ((uint32_t)((green << 2) | (green >> 4)) << 8) |
+                                 ((uint32_t)((blue << 3) | (blue >> 2)));
+            newhaven_display_put_pixel(display->framebuffer, x, y, rgb);
         }
-        for (int y = 0; y < NEWHAVEN_DISPLAY_V_RES; y++) {
-            newhaven_display_put_pixel(display->framebuffer, 0, y, 0xffffff);
-            newhaven_display_put_pixel(display->framebuffer, NEWHAVEN_DISPLAY_H_RES - 1, y, 0xffffff);
-        }
-        break;
-    case NEWHAVEN_TEST_PATTERN_CROSSHAIR:
-        newhaven_display_fill(display->framebuffer, 0x000000);
-        for (int x = 0; x < NEWHAVEN_DISPLAY_H_RES; x++) {
-            newhaven_display_put_pixel(display->framebuffer, x, NEWHAVEN_DISPLAY_V_RES / 2, 0xffffff);
-        }
-        for (int y = 0; y < NEWHAVEN_DISPLAY_V_RES; y++) {
-            newhaven_display_put_pixel(display->framebuffer, NEWHAVEN_DISPLAY_H_RES / 2, y, 0xffffff);
-        }
-        break;
-    default:
-        ESP_LOGE(TAG, "unknown test pattern %d", pattern);
-        return ESP_ERR_INVALID_ARG;
     }
 
     RETURN_ON_ERROR(esp_cache_msync(display->framebuffer, NEWHAVEN_DISPLAY_FRAMEBUFFER_SIZE,

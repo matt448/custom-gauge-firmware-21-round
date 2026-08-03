@@ -10,4 +10,6 @@ idf_component_register(
         esp_lcd
         esp_lcd_st7701
         esp_mm
+    EMBED_FILES
+        "../assets/rpm_gauge.rgb565"
 )

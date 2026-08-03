@@ -148,17 +148,24 @@ I (....) newhaven_display: Initializing ST7701S controller
 I (....) newhaven_display: Sending Newhaven NHD-2.1-480480AF-ASXP ST7701S initialization sequence
 ```
 
-The driver then starts MIPI DSI video output and the application displays each
-test pattern for about two seconds: black, white, red, green, blue, horizontal
-bars, border, and crosshair.
+The driver then starts MIPI DSI video output and renders the embedded static
+background at [`assets/rpm_gauge.rgb565`](assets/rpm_gauge.rgb565). The asset
+must be a 480 x 480, big-endian RGB565 image (460,800 bytes). Generate it from
+a PNG with:
+
+```powershell
+python tools\png_to_rgb565.py path\to\rpm_gauge.png
+```
+
+Copy the generated `rpm_gauge.rgb565` to `assets\rpm_gauge.rgb565`, then
+rebuild and flash. The application expands it into the existing RGB888
+framebuffer once at startup so the established DSI output format is unchanged.
 
 ## Troubleshooting
 
 - **Blank display:** Confirm VDD is within range, the backlight driver is
   enabled independently, the reset GPIO is correct, IM straps are 1/0/1, and
-  try the experimental vendor table only after verifying the panel supply
-  rails and lane wiring. Obtain Newhaven's exact table before treating a blank
-  result as a timing failure.
+  verify the panel supply rails and lane wiring.
 - **White display:** Check RESETX wiring and the table's sleep-out/display-on
   sequence. A lit white panel can indicate that backlight power is present
   while the controller was never initialized.
@@ -166,8 +173,7 @@ bars, border, and crosshair.
   the board's DSI PHY power source, PSRAM configuration, lane rate, and
   18 MHz pixel-clock timing.
 - **Shifted or clipped image:** Recheck all porch and sync values in
-  `display_config.h`; use the one-pixel border and crosshair to identify the
-  affected edge or axis.
+  `display_config.h` and confirm the source PNG is exactly 480 x 480.
 - **Swapped red and blue:** Change `NEWHAVEN_DISPLAY_COLOR_ORDER` and, once
   documented, add the corresponding ST7701S controller color-order command
   to the verified initialization table.
