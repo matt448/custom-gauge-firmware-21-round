@@ -54,7 +54,7 @@ void app_main(void)
                                                  cycle_time_ms :
                                                  GAUGE_CYCLE_DURATION_MS - cycle_time_ms) /
                                      (float)GAUGE_SWEEP_DURATION_MS;
-        const float target_value = cycle_fraction * 5.0f;
+        const float target_value = cycle_fraction * GAUGE_RENDERER_MAX_RPM;
 
         gauge_renderer_set_value(target_value);
         void *framebuffer;

@@ -7,10 +7,15 @@
 
 #define GAUGE_RENDERER_CENTER_X             240
 #define GAUGE_RENDERER_CENTER_Y             240
-#define GAUGE_RENDERER_NEEDLE_LENGTH        155
-#define GAUGE_RENDERER_NEEDLE_WIDTH         3
+#define GAUGE_RENDERER_NEEDLE_LENGTH        200
+#define GAUGE_RENDERER_NEEDLE_BASE_WIDTH    11
+#define GAUGE_RENDERER_NEEDLE_TIP_WIDTH     3
 #define GAUGE_RENDERER_NEEDLE_COLOR_WHITE   0xFFFFFFU
 #define GAUGE_RENDERER_SMOOTHING_COEFFICIENT 0.18f
+#define GAUGE_RENDERER_MIN_RPM              0.0f
+#define GAUGE_RENDERER_MAX_RPM              6000.0f
+#define GAUGE_RENDERER_START_ANGLE_DEG      270.0f
+#define GAUGE_RENDERER_END_ANGLE_DEG        0.0f
 
 typedef struct {
     float target_value;
@@ -37,5 +42,6 @@ void gauge_draw_needle(void *framebuffer,
                        int center_y,
                        float angle_deg,
                        int length,
-                       int width,
+                       int base_width,
+                       int tip_width,
                        uint32_t rgb);
