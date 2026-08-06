@@ -1,7 +1,6 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #include "esp_err.h"
 
@@ -125,34 +124,57 @@ static void gauge_write_background_pixel(void *framebuffer, int x, int y, const 
     gauge_put_pixel(framebuffer, x, y, rgb);
 }
 
-static void gauge_draw_line(void *framebuffer,
-                            int x0,
-                            int y0,
-                            int x1,
-                            int y1,
-                            gauge_pixel_writer_t writer,
-                            const void *context)
+static int64_t gauge_edge_function(int start_x, int start_y,
+                                   int end_x, int end_y,
+                                   int point_x, int point_y)
 {
-    int delta_x = abs(x1 - x0);
-    const int step_x = x0 < x1 ? 1 : -1;
-    const int delta_y = -abs(y1 - y0);
-    const int step_y = y0 < y1 ? 1 : -1;
-    int error = delta_x + delta_y;
+    return (int64_t)(end_x - start_x) * (point_y - start_y) -
+           (int64_t)(end_y - start_y) * (point_x - start_x);
+}
 
-    while (true) {
-        writer(framebuffer, x0, y0, context);
-        if (x0 == x1 && y0 == y1) {
-            break;
-        }
+static void gauge_fill_taper(void *framebuffer,
+                              const int vertex_x[4],
+                              const int vertex_y[4],
+                              gauge_pixel_writer_t writer,
+                              const void *context)
+{
+    int min_x = vertex_x[0];
+    int max_x = vertex_x[0];
+    int min_y = vertex_y[0];
+    int max_y = vertex_y[0];
 
-        const int twice_error = error * 2;
-        if (twice_error >= delta_y) {
-            error += delta_y;
-            x0 += step_x;
+    for (int index = 1; index < 4; index++) {
+        if (vertex_x[index] < min_x) {
+            min_x = vertex_x[index];
         }
-        if (twice_error <= delta_x) {
-            error += delta_x;
-            y0 += step_y;
+        if (vertex_x[index] > max_x) {
+            max_x = vertex_x[index];
+        }
+        if (vertex_y[index] < min_y) {
+            min_y = vertex_y[index];
+        }
+        if (vertex_y[index] > max_y) {
+            max_y = vertex_y[index];
+        }
+    }
+
+    for (int y = min_y; y <= max_y; y++) {
+        for (int x = min_x; x <= max_x; x++) {
+            const int64_t edge_0 = gauge_edge_function(vertex_x[0], vertex_y[0],
+                                                        vertex_x[1], vertex_y[1], x, y);
+            const int64_t edge_1 = gauge_edge_function(vertex_x[1], vertex_y[1],
+                                                        vertex_x[2], vertex_y[2], x, y);
+            const int64_t edge_2 = gauge_edge_function(vertex_x[2], vertex_y[2],
+                                                        vertex_x[3], vertex_y[3], x, y);
+            const int64_t edge_3 = gauge_edge_function(vertex_x[3], vertex_y[3],
+                                                        vertex_x[0], vertex_y[0], x, y);
+            const bool inside_clockwise = edge_0 <= 0 && edge_1 <= 0 &&
+                                          edge_2 <= 0 && edge_3 <= 0;
+            const bool inside_counterclockwise = edge_0 >= 0 && edge_1 >= 0 &&
+                                                 edge_2 >= 0 && edge_3 >= 0;
+            if (inside_clockwise || inside_counterclockwise) {
+                writer(framebuffer, x, y, context);
+            }
         }
     }
 }
@@ -177,7 +199,8 @@ static void gauge_draw_needle_shape(void *framebuffer,
                                     int center_y,
                                     float angle_deg,
                                     int length,
-                                    int width,
+                                    int base_width,
+                                    int tip_width,
                                     gauge_pixel_writer_t writer,
                                     const void *context)
 {
@@ -185,22 +208,25 @@ static void gauge_draw_needle_shape(void *framebuffer,
     const float cosine = cosf(angle_rad);
     const float sine = sinf(angle_rad);
     const int endpoint_x = center_x + (int)lroundf(cosine * length);
-    const int endpoint_y = center_y + (int)lroundf(sine * length);
-    const int first_offset = -(width / 2);
-    const int last_offset = first_offset + width - 1;
+    const int endpoint_y = center_y - (int)lroundf(sine * length);
+    const int first_base_offset = -(base_width / 2);
+    const int first_tip_offset = -(tip_width / 2);
+    const int last_base_offset = first_base_offset + base_width - 1;
+    const int last_tip_offset = first_tip_offset + tip_width - 1;
+    const int vertex_x[4] = {
+        center_x + (int)lroundf(sine * first_base_offset),
+        center_x + (int)lroundf(sine * last_base_offset),
+        endpoint_x + (int)lroundf(sine * last_tip_offset),
+        endpoint_x + (int)lroundf(sine * first_tip_offset),
+    };
+    const int vertex_y[4] = {
+        center_y + (int)lroundf(cosine * first_base_offset),
+        center_y + (int)lroundf(cosine * last_base_offset),
+        endpoint_y + (int)lroundf(cosine * last_tip_offset),
+        endpoint_y + (int)lroundf(cosine * first_tip_offset),
+    };
 
-    for (int offset = first_offset; offset <= last_offset; offset++) {
-        const int offset_x = (int)lroundf(-sine * offset);
-        const int offset_y = (int)lroundf(cosine * offset);
-        gauge_draw_line(framebuffer,
-                        center_x + offset_x,
-                        center_y + offset_y,
-                        endpoint_x + offset_x,
-                        endpoint_y + offset_y,
-                        writer,
-                        context);
-    }
-
+    gauge_fill_taper(framebuffer, vertex_x, vertex_y, writer, context);
     gauge_draw_hub(framebuffer, center_x, center_y, writer, context);
 }
 
@@ -229,10 +255,10 @@ esp_err_t gauge_renderer_init(const uint8_t *background_rgb565, size_t backgroun
     s_gauge_state = (gauge_state_t) {
         .target_value = 0.0f,
         .displayed_value = 0.0f,
-        .min_value = 0.0f,
-        .max_value = 5.0f,
-        .start_angle_deg = 145.0f,
-        .end_angle_deg = 395.0f,
+        .min_value = GAUGE_RENDERER_MIN_RPM,
+        .max_value = GAUGE_RENDERER_MAX_RPM,
+        .start_angle_deg = GAUGE_RENDERER_START_ANGLE_DEG,
+        .end_angle_deg = GAUGE_RENDERER_END_ANGLE_DEG,
     };
     for (size_t index = 0; index < NEWHAVEN_DISPLAY_FB_COUNT; index++) {
         s_frame_history[index] = (gauge_frame_history_t) {};
@@ -273,10 +299,12 @@ void gauge_draw_needle(void *framebuffer,
                        int center_y,
                        float angle_deg,
                        int length,
-                       int width,
+                       int base_width,
+                       int tip_width,
                        uint32_t rgb)
 {
-    if (framebuffer == NULL || length <= 0 || width <= 0) {
+    if (framebuffer == NULL || length <= 0 || base_width <= 0 || tip_width <= 0 ||
+        tip_width > base_width) {
         return;
     }
 
@@ -285,7 +313,8 @@ void gauge_draw_needle(void *framebuffer,
                             center_y,
                             angle_deg,
                             length,
-                            width,
+                            base_width,
+                            tip_width,
                             gauge_write_solid_pixel,
                             &rgb);
 }
@@ -307,7 +336,8 @@ esp_err_t gauge_renderer_render(void *framebuffer)
                                 GAUGE_RENDERER_CENTER_Y,
                                 frame_history->angle_deg,
                                 GAUGE_RENDERER_NEEDLE_LENGTH,
-                                GAUGE_RENDERER_NEEDLE_WIDTH,
+                                GAUGE_RENDERER_NEEDLE_BASE_WIDTH,
+                                GAUGE_RENDERER_NEEDLE_TIP_WIDTH,
                                 gauge_write_background_pixel,
                                 s_background_rgb565);
     }
@@ -320,7 +350,8 @@ esp_err_t gauge_renderer_render(void *framebuffer)
                       GAUGE_RENDERER_CENTER_Y,
                       frame_history->angle_deg,
                       GAUGE_RENDERER_NEEDLE_LENGTH,
-                      GAUGE_RENDERER_NEEDLE_WIDTH,
+                      GAUGE_RENDERER_NEEDLE_BASE_WIDTH,
+                      GAUGE_RENDERER_NEEDLE_TIP_WIDTH,
                       GAUGE_RENDERER_NEEDLE_COLOR_WHITE);
     frame_history->has_needle = true;
     return ESP_OK;
