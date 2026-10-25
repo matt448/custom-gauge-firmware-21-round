@@ -12,5 +12,6 @@ idf_component_register(
         esp_lcd_st7701
         esp_mm
     EMBED_FILES
-        "../assets/rpm_gauge.rgb565"
+        "../assets/oil_pressure_gauge.rgb565"
+        "../assets/needle.rgba8888"
 )

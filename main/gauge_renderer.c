@@ -8,11 +8,10 @@
 #include "gauge_renderer.h"
 
 #define GAUGE_RENDERER_DEGREES_TO_RADIANS (3.14159265358979323846f / 180.0f)
-#define GAUGE_RENDERER_HUB_RADIUS          6
 #define GAUGE_RENDERER_BACKGROUND_SIZE     \
     (NEWHAVEN_DISPLAY_H_RES * NEWHAVEN_DISPLAY_V_RES * 2)
-
-typedef void (*gauge_pixel_writer_t)(void *framebuffer, int x, int y, const void *context);
+#define GAUGE_RENDERER_NEEDLE_SPRITE_SIZE \
+    (GAUGE_RENDERER_NEEDLE_SPRITE_WIDTH * GAUGE_RENDERER_NEEDLE_SPRITE_HEIGHT * 4)
 
 typedef struct {
     void *framebuffer;
@@ -23,6 +22,7 @@ typedef struct {
 static gauge_state_t s_gauge_state;
 static gauge_frame_history_t s_frame_history[NEWHAVEN_DISPLAY_FB_COUNT];
 static const uint8_t *s_background_rgb565;
+static const uint8_t *s_needle_rgba8888;
 static bool s_initialized;
 
 static float gauge_clamp_value(float value)
@@ -101,133 +101,156 @@ static void gauge_put_pixel(void *framebuffer, int x, int y, uint32_t rgb)
 #endif
 }
 
-static void gauge_write_solid_pixel(void *framebuffer, int x, int y, const void *context)
+static uint32_t gauge_read_background_pixel(int x, int y)
 {
-    gauge_put_pixel(framebuffer, x, y, *(const uint32_t *)context);
-}
-
-static void gauge_write_background_pixel(void *framebuffer, int x, int y, const void *context)
-{
-    if (x < 0 || x >= NEWHAVEN_DISPLAY_H_RES || y < 0 || y >= NEWHAVEN_DISPLAY_V_RES) {
-        return;
-    }
-
-    const uint8_t *background = context;
     const size_t offset = ((size_t)y * NEWHAVEN_DISPLAY_H_RES + x) * 2;
-    const uint16_t pixel = ((uint16_t)background[offset] << 8) | background[offset + 1];
+    const uint16_t pixel = ((uint16_t)s_background_rgb565[offset] << 8) |
+                           s_background_rgb565[offset + 1];
     const uint8_t red = (pixel >> 11) & 0x1f;
     const uint8_t green = (pixel >> 5) & 0x3f;
     const uint8_t blue = pixel & 0x1f;
-    const uint32_t rgb = ((uint32_t)((red << 3) | (red >> 2)) << 16) |
-                         ((uint32_t)((green << 2) | (green >> 4)) << 8) |
-                         ((uint32_t)((blue << 3) | (blue >> 2)));
-    gauge_put_pixel(framebuffer, x, y, rgb);
+    return ((uint32_t)((red << 3) | (red >> 2)) << 16) |
+           ((uint32_t)((green << 2) | (green >> 4)) << 8) |
+           ((uint32_t)((blue << 3) | (blue >> 2)));
 }
 
-static int64_t gauge_edge_function(int start_x, int start_y,
-                                   int end_x, int end_y,
-                                   int point_x, int point_y)
+static void gauge_sprite_coordinate(int center_x,
+                                   int center_y,
+                                   float cosine,
+                                   float sine,
+                                   int source_x,
+                                   int source_y,
+                                   int *destination_x,
+                                   int *destination_y)
 {
-    return (int64_t)(end_x - start_x) * (point_y - start_y) -
-           (int64_t)(end_y - start_y) * (point_x - start_x);
+    const int perpendicular_offset = source_x - GAUGE_RENDERER_NEEDLE_PIVOT_X;
+    const int forward_offset = GAUGE_RENDERER_NEEDLE_PIVOT_Y - source_y;
+
+    *destination_x = center_x + (int)lroundf(cosine * forward_offset +
+                                             sine * perpendicular_offset);
+    *destination_y = center_y + (int)lroundf(-sine * forward_offset +
+                                             cosine * perpendicular_offset);
 }
 
-static void gauge_fill_taper(void *framebuffer,
-                              const int vertex_x[4],
-                              const int vertex_y[4],
-                              gauge_pixel_writer_t writer,
-                              const void *context)
-{
-    int min_x = vertex_x[0];
-    int max_x = vertex_x[0];
-    int min_y = vertex_y[0];
-    int max_y = vertex_y[0];
-
-    for (int index = 1; index < 4; index++) {
-        if (vertex_x[index] < min_x) {
-            min_x = vertex_x[index];
-        }
-        if (vertex_x[index] > max_x) {
-            max_x = vertex_x[index];
-        }
-        if (vertex_y[index] < min_y) {
-            min_y = vertex_y[index];
-        }
-        if (vertex_y[index] > max_y) {
-            max_y = vertex_y[index];
-        }
-    }
-
-    for (int y = min_y; y <= max_y; y++) {
-        for (int x = min_x; x <= max_x; x++) {
-            const int64_t edge_0 = gauge_edge_function(vertex_x[0], vertex_y[0],
-                                                        vertex_x[1], vertex_y[1], x, y);
-            const int64_t edge_1 = gauge_edge_function(vertex_x[1], vertex_y[1],
-                                                        vertex_x[2], vertex_y[2], x, y);
-            const int64_t edge_2 = gauge_edge_function(vertex_x[2], vertex_y[2],
-                                                        vertex_x[3], vertex_y[3], x, y);
-            const int64_t edge_3 = gauge_edge_function(vertex_x[3], vertex_y[3],
-                                                        vertex_x[0], vertex_y[0], x, y);
-            const bool inside_clockwise = edge_0 <= 0 && edge_1 <= 0 &&
-                                          edge_2 <= 0 && edge_3 <= 0;
-            const bool inside_counterclockwise = edge_0 >= 0 && edge_1 >= 0 &&
-                                                 edge_2 >= 0 && edge_3 >= 0;
-            if (inside_clockwise || inside_counterclockwise) {
-                writer(framebuffer, x, y, context);
-            }
-        }
-    }
-}
-
-static void gauge_draw_hub(void *framebuffer,
-                           int center_x,
-                           int center_y,
-                           gauge_pixel_writer_t writer,
-                           const void *context)
-{
-    for (int y = -GAUGE_RENDERER_HUB_RADIUS; y <= GAUGE_RENDERER_HUB_RADIUS; y++) {
-        for (int x = -GAUGE_RENDERER_HUB_RADIUS; x <= GAUGE_RENDERER_HUB_RADIUS; x++) {
-            if ((x * x) + (y * y) <= GAUGE_RENDERER_HUB_RADIUS * GAUGE_RENDERER_HUB_RADIUS) {
-                writer(framebuffer, center_x + x, center_y + y, context);
-            }
-        }
-    }
-}
-
-static void gauge_draw_needle_shape(void *framebuffer,
-                                    int center_x,
+static void gauge_get_sprite_bounds(int center_x,
                                     int center_y,
-                                    float angle_deg,
-                                    int length,
-                                    int base_width,
-                                    int tip_width,
-                                    gauge_pixel_writer_t writer,
-                                    const void *context)
+                                    float cosine,
+                                    float sine,
+                                    int *min_x,
+                                    int *max_x,
+                                    int *min_y,
+                                    int *max_y)
+{
+    const int source_x[] = {0, GAUGE_RENDERER_NEEDLE_SPRITE_WIDTH - 1};
+    const int source_y[] = {0, GAUGE_RENDERER_NEEDLE_SPRITE_HEIGHT - 1};
+
+    *min_x = NEWHAVEN_DISPLAY_H_RES - 1;
+    *max_x = 0;
+    *min_y = NEWHAVEN_DISPLAY_V_RES - 1;
+    *max_y = 0;
+
+    for (size_t y_index = 0; y_index < sizeof(source_y) / sizeof(source_y[0]); y_index++) {
+        for (size_t x_index = 0; x_index < sizeof(source_x) / sizeof(source_x[0]); x_index++) {
+            int x;
+            int y;
+
+            gauge_sprite_coordinate(center_x, center_y, cosine, sine,
+                                    source_x[x_index], source_y[y_index], &x, &y);
+            if (x < *min_x) {
+                *min_x = x;
+            }
+            if (x > *max_x) {
+                *max_x = x;
+            }
+            if (y < *min_y) {
+                *min_y = y;
+            }
+            if (y > *max_y) {
+                *max_y = y;
+            }
+        }
+    }
+}
+
+static void gauge_restore_needle_area(void *framebuffer,
+                                     int center_x,
+                                     int center_y,
+                                     float angle_deg)
 {
     const float angle_rad = angle_deg * GAUGE_RENDERER_DEGREES_TO_RADIANS;
     const float cosine = cosf(angle_rad);
     const float sine = sinf(angle_rad);
-    const int endpoint_x = center_x + (int)lroundf(cosine * length);
-    const int endpoint_y = center_y - (int)lroundf(sine * length);
-    const int first_base_offset = -(base_width / 2);
-    const int first_tip_offset = -(tip_width / 2);
-    const int last_base_offset = first_base_offset + base_width - 1;
-    const int last_tip_offset = first_tip_offset + tip_width - 1;
-    const int vertex_x[4] = {
-        center_x + (int)lroundf(sine * first_base_offset),
-        center_x + (int)lroundf(sine * last_base_offset),
-        endpoint_x + (int)lroundf(sine * last_tip_offset),
-        endpoint_x + (int)lroundf(sine * first_tip_offset),
-    };
-    const int vertex_y[4] = {
-        center_y + (int)lroundf(cosine * first_base_offset),
-        center_y + (int)lroundf(cosine * last_base_offset),
-        endpoint_y + (int)lroundf(cosine * last_tip_offset),
-        endpoint_y + (int)lroundf(cosine * first_tip_offset),
-    };
+    int min_x;
+    int max_x;
+    int min_y;
+    int max_y;
 
-    gauge_fill_taper(framebuffer, vertex_x, vertex_y, writer, context);
-    gauge_draw_hub(framebuffer, center_x, center_y, writer, context);
+    gauge_get_sprite_bounds(center_x, center_y, cosine, sine,
+                            &min_x, &max_x, &min_y, &max_y);
+
+    for (int y = min_y - 1; y <= max_y + 1; y++) {
+        for (int x = min_x - 1; x <= max_x + 1; x++) {
+            if (x >= 0 && x < NEWHAVEN_DISPLAY_H_RES &&
+                y >= 0 && y < NEWHAVEN_DISPLAY_V_RES) {
+                gauge_put_pixel(framebuffer, x, y, gauge_read_background_pixel(x, y));
+            }
+        }
+    }
+}
+
+static void gauge_draw_needle_sprite(void *framebuffer,
+                                    int center_x,
+                                    int center_y,
+                                    float angle_deg)
+{
+    const float angle_rad = angle_deg * GAUGE_RENDERER_DEGREES_TO_RADIANS;
+    const float cosine = cosf(angle_rad);
+    const float sine = sinf(angle_rad);
+    int min_x;
+    int max_x;
+    int min_y;
+    int max_y;
+
+    gauge_get_sprite_bounds(center_x, center_y, cosine, sine,
+                            &min_x, &max_x, &min_y, &max_y);
+
+    for (int destination_y = min_y - 1; destination_y <= max_y + 1; destination_y++) {
+        for (int destination_x = min_x - 1; destination_x <= max_x + 1; destination_x++) {
+            const int horizontal_offset = destination_x - center_x;
+            const int vertical_offset = destination_y - center_y;
+            const int forward_offset =
+                (int)lroundf(cosine * horizontal_offset - sine * vertical_offset);
+            const int perpendicular_offset =
+                (int)lroundf(sine * horizontal_offset + cosine * vertical_offset);
+            const int source_x = perpendicular_offset + GAUGE_RENDERER_NEEDLE_PIVOT_X;
+            const int source_y = GAUGE_RENDERER_NEEDLE_PIVOT_Y - forward_offset;
+
+            if (destination_x < 0 || destination_x >= NEWHAVEN_DISPLAY_H_RES ||
+                destination_y < 0 || destination_y >= NEWHAVEN_DISPLAY_V_RES ||
+                source_x < 0 || source_x >= GAUGE_RENDERER_NEEDLE_SPRITE_WIDTH ||
+                source_y < 0 || source_y >= GAUGE_RENDERER_NEEDLE_SPRITE_HEIGHT) {
+                continue;
+            }
+
+            const size_t offset =
+                ((size_t)source_y * GAUGE_RENDERER_NEEDLE_SPRITE_WIDTH + source_x) * 4;
+            const uint8_t source_alpha = s_needle_rgba8888[offset + 3];
+            if (source_alpha == 0) {
+                continue;
+            }
+
+            const uint32_t background = gauge_read_background_pixel(destination_x, destination_y);
+            const uint32_t inverse_alpha = 255 - source_alpha;
+            const uint32_t red = (s_needle_rgba8888[offset] * source_alpha +
+                                 ((background >> 16) & 0xff) * inverse_alpha) / 255;
+            const uint32_t green = (s_needle_rgba8888[offset + 1] * source_alpha +
+                                   ((background >> 8) & 0xff) * inverse_alpha) / 255;
+            const uint32_t blue = (s_needle_rgba8888[offset + 2] * source_alpha +
+                                  (background & 0xff) * inverse_alpha) / 255;
+            gauge_put_pixel(framebuffer, destination_x, destination_y,
+                           (red << 16) | (green << 8) | blue);
+        }
+    }
 }
 
 static gauge_frame_history_t *gauge_get_frame_history(void *framebuffer)
@@ -246,17 +269,21 @@ static gauge_frame_history_t *gauge_get_frame_history(void *framebuffer)
     return NULL;
 }
 
-esp_err_t gauge_renderer_init(const uint8_t *background_rgb565, size_t background_size)
+esp_err_t gauge_renderer_init(const uint8_t *background_rgb565,
+                              size_t background_size,
+                              const uint8_t *needle_rgba8888,
+                              size_t needle_size)
 {
-    if (background_rgb565 == NULL || background_size != GAUGE_RENDERER_BACKGROUND_SIZE) {
+    if (background_rgb565 == NULL || background_size != GAUGE_RENDERER_BACKGROUND_SIZE ||
+        needle_rgba8888 == NULL || needle_size != GAUGE_RENDERER_NEEDLE_SPRITE_SIZE) {
         return ESP_ERR_INVALID_ARG;
     }
 
     s_gauge_state = (gauge_state_t) {
         .target_value = 0.0f,
         .displayed_value = 0.0f,
-        .min_value = GAUGE_RENDERER_MIN_RPM,
-        .max_value = GAUGE_RENDERER_MAX_RPM,
+        .min_value = GAUGE_RENDERER_MIN_PSI,
+        .max_value = GAUGE_RENDERER_MAX_PSI,
         .start_angle_deg = GAUGE_RENDERER_START_ANGLE_DEG,
         .end_angle_deg = GAUGE_RENDERER_END_ANGLE_DEG,
     };
@@ -264,6 +291,7 @@ esp_err_t gauge_renderer_init(const uint8_t *background_rgb565, size_t backgroun
         s_frame_history[index] = (gauge_frame_history_t) {};
     }
     s_background_rgb565 = background_rgb565;
+    s_needle_rgba8888 = needle_rgba8888;
     s_initialized = true;
     return ESP_OK;
 }
@@ -274,6 +302,17 @@ void gauge_renderer_set_value(float value)
         return;
     }
     s_gauge_state.target_value = gauge_clamp_value(value);
+}
+
+void gauge_renderer_set_value_immediately(float value)
+{
+    if (!s_initialized) {
+        return;
+    }
+
+    const float clamped_value = gauge_clamp_value(value);
+    s_gauge_state.target_value = clamped_value;
+    s_gauge_state.displayed_value = clamped_value;
 }
 
 float gauge_value_to_angle(float value)
@@ -294,31 +333,6 @@ const gauge_state_t *gauge_renderer_get_state(void)
     return &s_gauge_state;
 }
 
-void gauge_draw_needle(void *framebuffer,
-                       int center_x,
-                       int center_y,
-                       float angle_deg,
-                       int length,
-                       int base_width,
-                       int tip_width,
-                       uint32_t rgb)
-{
-    if (framebuffer == NULL || length <= 0 || base_width <= 0 || tip_width <= 0 ||
-        tip_width > base_width) {
-        return;
-    }
-
-    gauge_draw_needle_shape(framebuffer,
-                            center_x,
-                            center_y,
-                            angle_deg,
-                            length,
-                            base_width,
-                            tip_width,
-                            gauge_write_solid_pixel,
-                            &rgb);
-}
-
 esp_err_t gauge_renderer_render(void *framebuffer)
 {
     if (!s_initialized || framebuffer == NULL) {
@@ -331,28 +345,19 @@ esp_err_t gauge_renderer_render(void *framebuffer)
     }
 
     if (frame_history->has_needle) {
-        gauge_draw_needle_shape(framebuffer,
-                                GAUGE_RENDERER_CENTER_X,
-                                GAUGE_RENDERER_CENTER_Y,
-                                frame_history->angle_deg,
-                                GAUGE_RENDERER_NEEDLE_LENGTH,
-                                GAUGE_RENDERER_NEEDLE_BASE_WIDTH,
-                                GAUGE_RENDERER_NEEDLE_TIP_WIDTH,
-                                gauge_write_background_pixel,
-                                s_background_rgb565);
+        gauge_restore_needle_area(framebuffer,
+                                  GAUGE_RENDERER_CENTER_X,
+                                  GAUGE_RENDERER_CENTER_Y,
+                                  frame_history->angle_deg);
     }
 
     s_gauge_state.displayed_value += GAUGE_RENDERER_SMOOTHING_COEFFICIENT *
                                      (s_gauge_state.target_value - s_gauge_state.displayed_value);
     frame_history->angle_deg = gauge_value_to_angle(s_gauge_state.displayed_value);
-    gauge_draw_needle(framebuffer,
-                      GAUGE_RENDERER_CENTER_X,
-                      GAUGE_RENDERER_CENTER_Y,
-                      frame_history->angle_deg,
-                      GAUGE_RENDERER_NEEDLE_LENGTH,
-                      GAUGE_RENDERER_NEEDLE_BASE_WIDTH,
-                      GAUGE_RENDERER_NEEDLE_TIP_WIDTH,
-                      GAUGE_RENDERER_NEEDLE_COLOR_WHITE);
+    gauge_draw_needle_sprite(framebuffer,
+                             GAUGE_RENDERER_CENTER_X,
+                             GAUGE_RENDERER_CENTER_Y,
+                             frame_history->angle_deg);
     frame_history->has_needle = true;
     return ESP_OK;
 }

@@ -148,35 +148,39 @@ I (....) newhaven_display: Initializing ST7701S controller
 I (....) newhaven_display: Sending Newhaven NHD-2.1-480480AF-ASXP ST7701S initialization sequence
 ```
 
-The driver then starts MIPI DSI video output and animates a white needle over
-the embedded static background at [`assets/rpm_gauge.rgb565`](assets/rpm_gauge.rgb565).
-The asset must be a 480 x 480, big-endian RGB565 image (460,800 bytes).
-Generate it from a PNG with:
+The driver then starts MIPI DSI video output and animates the supplied needle
+sprite over the embedded oil-pressure face at
+[`assets/oil_pressure_gauge.rgb565`](assets/oil_pressure_gauge.rgb565). The
+face is a centered 480 x 480, big-endian RGB565 image (460,800 bytes); its
+source PNG may be smaller than the display. The needle is an RGBA8888 sprite.
+Generate both embedded assets from their source PNGs with:
 
 ```powershell
-python tools\png_to_rgb565.py path\to\rpm_gauge.png
+python tools\png_to_rgb565.py assets\oil_pressure_gauge.png --canvas-size 480 -o assets\oil_pressure_gauge.rgb565
+python tools\png_to_rgb565.py assets\needle.png --format rgba8888 -o assets\needle.rgba8888
 ```
 
-Copy the generated `rpm_gauge.rgb565` to `assets\rpm_gauge.rgb565`, then
-rebuild and flash. The application expands the asset into both RGB888
-framebuffers at startup. Each 30 FPS frame restores only the prior needle's
-pixels from the RGB565 asset, draws the new three-pixel-wide white needle and
-center hub in the inactive framebuffer, then presents that completed
-framebuffer to DSI scanout.
+Rebuild and flash after replacing either source asset. The application expands
+the face into both RGB888 framebuffers at startup. Each 30 FPS frame restores
+the previous needle sprite's rotated bounds from the RGB565 face, alpha-blends
+the newly rotated sprite into the inactive framebuffer, then presents that
+completed framebuffer to DSI scanout.
 
 ## Gauge animation
 
 The independent `gauge_renderer` module currently generates a synthetic test
-value that sweeps from 0 to 6000 RPM over approximately three seconds and
-returns to 0 RPM over the next three seconds. Its displayed value uses an
-exponential smoothing coefficient of 0.18.
+value that sweeps from 0 to 150 PSI over approximately 1.5 seconds and
+returns to 0 PSI over the next 1.5 seconds, then holds at 0 PSI. Its
+displayed value is set directly during the startup sweep so it reaches both
+endpoints exactly.
 
-The needle center is `(240, 240)` and its center-to-tip radius is 200 pixels.
-The white needle has an 11-pixel base and tapers to a three-pixel tip. Values map linearly from 0 RPM at
-270 degrees (down) to 6000 RPM at 0 degrees (right). Each 1000 RPM major
-marker is 45 degrees counterclockwise from the previous marker. The renderer
-uses Cartesian angles, so it negates the display-space Y sine term; these
-constants can be calibrated later without changing the panel setup.
+The needle sprite's pivot is `(5, 200)`: centered horizontally and 200 pixels
+from its top edge. It therefore has a 200-pixel forward length and a 49-pixel
+counterweight. Values map linearly from 0 PSI at 225 degrees (lower-left) to
+150 PSI at -45 degrees (lower-right), following the face's counterclockwise
+scale. The renderer uses Cartesian angles, so it negates the display-space Y
+sine term; these constants can be calibrated later without changing the panel
+setup.
 
 The default framebuffer count is two. The DSI driver scans one PSRAM buffer
 while the renderer updates the other, eliminating visible tearing and avoiding
